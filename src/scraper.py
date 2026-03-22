@@ -222,23 +222,45 @@ def scrape_keyword(token, keyword, seen_playlist_ids, max_results=None):
     return token, results
 
 
-def save_to_csv(rows, filename="output.csv"):
-    """Save results to CSV, deduplicating by playlist URL."""
-    seen = set()
-    unique_rows = []
+def load_existing_csv(filename="output.csv"):
+    """Load existing CSV and return (rows, set of playlist URLs)."""
+    rows = []
+    seen_urls = set()
+    try:
+        with open(filename, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+                seen_urls.add(row["playlist_url"])
+    except FileNotFoundError:
+        pass
+    return rows, seen_urls
+
+
+def save_to_csv(rows, filename="output.csv", existing_rows=None, existing_urls=None):
+    """Save results to CSV, appending to existing data and deduplicating by playlist URL."""
+    if existing_rows is None:
+        existing_rows = []
+    if existing_urls is None:
+        existing_urls = set()
+
+    seen = set(existing_urls)
+    new_rows = []
     for row in rows:
         key = row["playlist_url"]
         if key not in seen:
             seen.add(key)
-            unique_rows.append(row)
+            new_rows.append(row)
+
+    all_rows = existing_rows + new_rows
 
     fieldnames = ["email", "instagram", "playlist_name", "playlist_url", "keyword", "description_snippet"]
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(unique_rows)
+        writer.writerows(all_rows)
 
-    return len(unique_rows)
+    return len(new_rows), len(all_rows)
 
 
 def main():
@@ -260,19 +282,30 @@ def main():
         print(f"Error getting token: {e}")
         return
 
+    existing_rows, existing_urls = load_existing_csv()
+    if existing_rows:
+        print(f"Loaded {len(existing_rows)} existing entries from output.csv (will skip duplicates)")
+
     all_results = []
     seen_playlist_ids = set()
+    # Pre-populate seen IDs from existing data to avoid re-fetching
+    for row in existing_rows:
+        url = row.get("playlist_url", "")
+        # Extract playlist ID from URL
+        if "/playlist/" in url:
+            seen_playlist_ids.add(url.split("/playlist/")[-1].split("?")[0])
+
     for keyword in keywords:
         print(f"\nProcessing keyword: {keyword}")
         token, results = scrape_keyword(token, keyword, seen_playlist_ids, max_results=max_results)
         all_results.extend(results)
-        print(f"  Found {len(results)} playlist(s) with contact info for '{keyword}'")
+        print(f"  Found {len(results)} new playlist(s) with contact info for '{keyword}'")
 
     if all_results:
-        count = save_to_csv(all_results)
-        print(f"\nSaved {count} unique playlist(s) to output.csv")
+        new_count, total_count = save_to_csv(all_results, existing_rows=existing_rows, existing_urls=existing_urls)
+        print(f"\nAdded {new_count} new playlist(s) — {total_count} total in output.csv")
     else:
-        print("\nNo playlists with email/instagram found across any keywords.")
+        print("\nNo new playlists found. output.csv unchanged.")
 
 
 if __name__ == "__main__":
