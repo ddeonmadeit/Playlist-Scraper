@@ -10,7 +10,15 @@ from tqdm import tqdm
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-INSTAGRAM_REGEX = re.compile(r"(?:instagram|ig|insta)[:\s/@]*@?([a-zA-Z0-9_.]{1,30})", re.IGNORECASE)
+INSTAGRAM_REGEX = re.compile(
+    r"(?:instagram\.com/|(?:^|[\s|•·\-,])(?:ig|insta(?:gram)?)[:\s/@]+@?)([a-zA-Z0-9][a-zA-Z0-9_.]{2,29})",
+    re.IGNORECASE | re.MULTILINE,
+)
+IG_STOPWORDS = {
+    "for", "the", "and", "this", "that", "with", "from", "not", "are", "was",
+    "but", "has", "had", "have", "will", "can", "all", "her", "his", "its",
+    "our", "you", "com", "org", "net", "www", "http", "https",
+}
 
 MAX_SEARCH_OFFSET = 1000
 SEARCH_LIMIT = 10
@@ -148,7 +156,8 @@ def extract_instagrams(text):
     """Extract Instagram handles from text using regex."""
     if not text:
         return []
-    return INSTAGRAM_REGEX.findall(text)
+    raw = INSTAGRAM_REGEX.findall(text)
+    return [h for h in raw if h.lower() not in IG_STOPWORDS]
 
 
 def scrape_keyword(token, keyword, seen_playlist_ids, max_results=None):
