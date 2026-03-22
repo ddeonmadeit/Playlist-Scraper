@@ -14,6 +14,7 @@ INSTAGRAM_REGEX = re.compile(r"(?:instagram|ig|insta)[:\s/@]*@?([a-zA-Z0-9_.]{1,
 
 MAX_SEARCH_OFFSET = 1000
 SEARCH_LIMIT = 10
+DEFAULT_MAX_RESULTS = None  # No limit by default
 REQUEST_DELAY = 0.3
 
 # Known Spotify editorial playlists used to fetch anonymous tokens from embed pages
@@ -82,7 +83,7 @@ def api_request(token, url, params=None):
     raise RuntimeError(f"API call failed after {max_retries} retries (rate limited)")
 
 
-def search_playlists(token, keyword):
+def search_playlists(token, keyword, max_results=None):
     """Search for playlists by keyword, paginating up to the 1000 offset limit."""
     playlists = []
     offset = 0
@@ -90,6 +91,9 @@ def search_playlists(token, keyword):
 
     with tqdm(desc=f"Searching '{keyword}'", unit="playlist") as pbar:
         while offset < MAX_SEARCH_OFFSET:
+            if max_results and len(playlists) >= max_results:
+                break
+
             params = {
                 "q": keyword,
                 "type": "playlist",
@@ -108,6 +112,8 @@ def search_playlists(token, keyword):
             pbar.update(len(items))
             offset += SEARCH_LIMIT
 
+    if max_results:
+        playlists = playlists[:max_results]
     return playlists
 
 
@@ -132,18 +138,18 @@ def extract_instagrams(text):
     return INSTAGRAM_REGEX.findall(text)
 
 
-def scrape_keyword(token, keyword, seen_playlist_ids):
+def scrape_keyword(token, keyword, seen_playlist_ids, max_results=None):
     """Search playlists for a keyword and extract emails/instagrams from descriptions.
 
     Returns (token, results) — token may be refreshed if it expired mid-run.
     """
     try:
-        playlists = search_playlists(token, keyword)
+        playlists = search_playlists(token, keyword, max_results=max_results)
     except RuntimeError as e:
         if "TOKEN_EXPIRED" in str(e):
             print("  Token expired, refreshing...")
             token = get_anonymous_token()
-            playlists = search_playlists(token, keyword)
+            playlists = search_playlists(token, keyword, max_results=max_results)
         else:
             raise
 
@@ -214,11 +220,15 @@ def save_to_csv(rows, filename="output.csv"):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: python {sys.argv[0]} <keyword1> [keyword2] ...")
-        return
+    import argparse
 
-    keywords = sys.argv[1:]
+    parser = argparse.ArgumentParser(description="Scrape Spotify playlists for curator contact info.")
+    parser.add_argument("keywords", nargs="+", help="Search keywords (e.g. 'jazz rap' 'lofi beats')")
+    parser.add_argument("--limit", type=int, default=None, help="Max playlists to search per keyword")
+    args = parser.parse_args()
+
+    keywords = args.keywords
+    max_results = args.limit
 
     print("Getting anonymous Spotify token (no API key needed)...")
     try:
@@ -232,7 +242,7 @@ def main():
     seen_playlist_ids = set()
     for keyword in keywords:
         print(f"\nProcessing keyword: {keyword}")
-        token, results = scrape_keyword(token, keyword, seen_playlist_ids)
+        token, results = scrape_keyword(token, keyword, seen_playlist_ids, max_results=max_results)
         all_results.extend(results)
         print(f"  Found {len(results)} playlist(s) with contact info for '{keyword}'")
 
