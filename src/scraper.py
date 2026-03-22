@@ -17,7 +17,7 @@ SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 
 MAX_SEARCH_OFFSET = 1000
-SEARCH_LIMIT = 50
+SEARCH_LIMIT = 10
 API_DELAY = 0.1
 
 
@@ -43,6 +43,8 @@ def api_call_with_backoff(func, *args, **kwargs):
                 retry_after = int(e.headers.get("Retry-After", 2 ** attempt))
                 print(f"  Rate limited. Retrying in {retry_after}s...")
                 time.sleep(retry_after)
+            elif e.http_status == 400:
+                return None
             else:
                 raise
     raise RuntimeError(f"API call failed after {max_retries} retries")
@@ -62,6 +64,8 @@ def search_playlists(sp, keyword):
                 limit=SEARCH_LIMIT,
                 offset=offset,
             )
+            if not results:
+                break
             items = results["playlists"]["items"]
             if not items:
                 break
