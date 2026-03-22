@@ -13,7 +13,7 @@ Scrapes email addresses from Spotify playlist descriptions by searching for play
 
 1. Copy `.env.example` to `.env` and fill in your Spotify API credentials.
 2. Install dependencies: `pip install -r requirements.txt`
-3. Run: `python src/scraper.py`
+3. Run: `python src/scraper.py <keyword1> [keyword2] ...`
 
 ## Key rules
 

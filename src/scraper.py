@@ -1,6 +1,7 @@
 import csv
 import os
 import re
+import sys
 import time
 
 import spotipy
@@ -115,14 +116,13 @@ def scrape_keyword(sp, keyword):
     return results
 
 
-def save_to_csv(rows, filename="results.csv"):
-    """Save results to CSV, deduplicating by email+playlist pair."""
+def save_to_csv(rows, filename="output.csv"):
+    """Save results to CSV, deduplicating by email address."""
     seen = set()
     unique_rows = []
     for row in rows:
-        key = (row["email"], row["playlist_url"])
-        if key not in seen:
-            seen.add(key)
+        if row["email"] not in seen:
+            seen.add(row["email"])
             unique_rows.append(row)
 
     fieldnames = ["email", "playlist_name", "playlist_url", "keyword", "description_snippet"]
@@ -139,12 +139,11 @@ def main():
         print("Error: Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env")
         return
 
-    keywords_input = input("Enter genre keywords (comma-separated): ").strip()
-    if not keywords_input:
-        print("No keywords provided.")
+    if len(sys.argv) < 2:
+        print(f"Usage: python {sys.argv[0]} <keyword1> [keyword2] ...")
         return
 
-    keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
+    keywords = sys.argv[1:]
     sp = get_spotify_client()
 
     all_results = []
@@ -156,7 +155,7 @@ def main():
 
     if all_results:
         count = save_to_csv(all_results)
-        print(f"\nSaved {count} unique email(s) to results.csv")
+        print(f"\nSaved {count} unique email(s) to output.csv")
     else:
         print("\nNo emails found across any keywords.")
 
