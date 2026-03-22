@@ -196,14 +196,25 @@ def extract_contacts(text):
 
 
 def save_to_csv(rows, filename="output.csv"):
-    """Save to CSV, deduplicating by playlist URL."""
-    seen = set()
+    """Save to CSV, deduplicating by email/instagram contact (one entry per unique contact)."""
+    seen_urls = set()
+    seen_contacts = set()
     unique = []
     for row in rows:
-        key = row["playlist_url"]
-        if key not in seen:
-            seen.add(key)
-            unique.append(row)
+        url = row["playlist_url"]
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+
+        email = row.get("email", "").strip()
+        instagram = row.get("instagram", "").strip()
+        contact_key = email if email else instagram
+        if contact_key and contact_key in seen_contacts:
+            continue
+        if contact_key:
+            seen_contacts.add(contact_key)
+
+        unique.append(row)
 
     fieldnames = [
         "email", "instagram", "playlist_name",
@@ -272,41 +283,43 @@ def scrape_keyword(session, token, keyword, seen_ids, max_playlists=200):
 
 def main():
     default_keywords = [
-        # Submit-focused searches (high hit rate for contacts)
-        "submit rap playlist", "submit hip hop", "submit music rap",
-        "submit beats playlist", "submit R&B playlist",
-        "submit trap playlist", "submit lofi playlist",
+        # User-specified genres and styles
+        "submit study beats playlist", "submit jazz hop playlist",
+        "submit chill hop playlist", "submit hip hop playlist",
+        "submit conscious hip hop playlist", "submit rap playlist",
+        "submit pop rap playlist", "submit neo soul pop rap playlist",
+        "submit bedroom pop playlist", "submit lo-fi pop playlist",
+        "submit alternative R&B playlist", "submit indie R&B playlist",
+        "submit Latin hip hop playlist", "submit boom bap playlist",
+        # Genre-only searches
+        "study beats", "jazz hop", "chill hop",
+        "conscious hip hop", "pop rap", "neo soul pop rap",
+        "bedroom pop", "lo-fi pop", "alternative R&B", "indie R&B",
+        "Latin hip hop", "boom bap",
+        # Broader submit variations
+        "submit hip hop", "submit R&B playlist", "submit lofi playlist",
+        "submit beats playlist", "submit music rap",
         "rap playlist submit email", "hip hop playlist curators",
-        "indie rap submit", "underground submit playlist",
-        # Genre searches
-        "Jazz Rap", "Alternative Hip Hop", "Conscious Hip Hop", "Rap", "Pop Rap",
-        "Trap", "Drill", "Boom Bap", "Lo-fi Hip Hop", "Underground Hip Hop",
-        "Old School Hip Hop", "New School Rap", "Gangsta Rap", "Southern Hip Hop",
-        "West Coast Hip Hop", "East Coast Hip Hop", "Midwest Rap", "UK Rap",
-        "French Rap", "German Rap", "Latin Rap", "Spanish Rap",
-        "Trap Soul", "Cloud Rap", "Emo Rap", "Mumble Rap",
-        "Christian Hip Hop", "Political Rap", "Storytelling Rap",
-        "Rap Freestyle", "Cypher Rap", "Battle Rap",
-        "R&B", "Neo Soul", "Alternative R&B", "Modern R&B",
-        "Soul Music", "Funk", "Contemporary R&B",
-        "Hip Hop Beats", "Rap Instrumentals", "Type Beat",
-        "Boom Bap Beats", "Trap Beats", "Lo-fi Beats",
-        "Study Beats", "Chill Beats", "Freestyle Beats",
-        "Chill Rap", "Hype Rap", "Sad Rap", "Party Rap",
-        "Workout Rap", "Gym Hip Hop", "Drive Rap",
-        "Late Night Hip Hop", "Summer Rap", "Vibes Hip Hop",
-        "Hip Hop Soul", "Rap Rock", "Hip Hop EDM",
-        "Afrobeats Hip Hop", "Dancehall Rap", "Reggaeton Rap",
-        "Underground Rap", "Indie Hip Hop", "New Rap",
-        "Undiscovered Rap", "Small Artist Rap", "Up and Coming Rap",
-        "Fresh Hip Hop", "Hidden Gems Rap", "Unsigned Rapper",
-        "Independent Hip Hop", "Bedroom Rapper",
-        # More submit-focused
-        "playlist submission rap", "accepting submissions hip hop",
-        "send beats playlist", "curated rap playlist",
-        "new artist rap playlist", "promote rap music",
+        "underground submit playlist", "playlist submission rap",
+        "accepting submissions hip hop", "send beats playlist",
+        "curated rap playlist", "new artist rap playlist",
         "rap playlist email", "hip hop email submit",
         "independent artist playlist", "unsigned artist playlist",
+        "submit neo soul playlist", "submit soul playlist",
+        "submit jazz rap playlist", "submit chill rap playlist",
+        "submit indie hip hop playlist", "submit alternative hip hop playlist",
+        "submit conscious rap playlist", "submit lo-fi beats playlist",
+        "submit study beats email", "submit bedroom pop email",
+        "promote rap music", "submit your music hip hop",
+        "indie rap submit", "submit R&B email",
+        "submit afrobeats playlist", "submit latin rap playlist",
+        # Extra genre combos
+        "Neo Soul", "Alternative Hip Hop", "Jazz Rap",
+        "Chill Rap", "Indie Hip Hop", "Lo-fi Hip Hop",
+        "Underground Hip Hop", "R&B", "Hip Hop Soul",
+        "Fresh Hip Hop", "Hidden Gems Rap", "Undiscovered Rap",
+        "Up and Coming Rap", "Independent Hip Hop", "Bedroom Rapper",
+        "Small Artist Rap", "Unsigned Rapper",
     ]
     keywords = sys.argv[1:] if len(sys.argv) > 1 else default_keywords
 
