@@ -65,10 +65,11 @@ def get_token(session):
     raise RuntimeError("Could not get token")
 
 
-def search_with_token(session, token, keyword, max_playlists=50):
+def search_with_token(session, token, keyword, max_playlists=200):
     """Search for playlists via API using the anonymous token."""
     playlists = []
     offset = 0
+    rate_limit_hits = 0
 
     while len(playlists) < max_playlists and offset < 1000:
         resp = session.get(
@@ -85,9 +86,12 @@ def search_with_token(session, token, keyword, max_playlists=50):
 
         if resp.status_code == 429:
             wait = int(resp.headers.get("Retry-After", 30))
-            print(f"    API rate limited, waiting {wait}s...")
+            rate_limit_hits += 1
+            if wait > 120 or rate_limit_hits > 3:
+                print(f"    Heavy rate limit ({wait}s), skipping rest of search...")
+                break
+            print(f"    Rate limited, waiting {wait}s...")
             time.sleep(wait)
-            # Get fresh token
             token = get_token(session)
             continue
 
@@ -158,7 +162,9 @@ def get_description_from_api(session, token, playlist_id):
 
     if resp.status_code == 429:
         wait = int(resp.headers.get("Retry-After", 30))
-        print(f"    API rate limited, waiting {wait}s...")
+        if wait > 120:
+            return token, None  # Signal to use page scraping
+        print(f"    Rate limited, waiting {wait}s...")
         time.sleep(wait)
         token = get_token(session)
         resp = session.get(
@@ -210,17 +216,20 @@ def save_to_csv(rows, filename="output.csv"):
     return len(unique)
 
 
-def scrape_keyword(session, token, keyword, seen_ids, max_playlists=50):
-    """Search and scrape one keyword. Returns (token, results)."""
+def scrape_keyword(session, token, keyword, seen_ids, max_playlists=200):
+    """Search and scrape one keyword using search result descriptions.
+
+    No separate API call needed per playlist — search results include descriptions.
+    Returns (token, results).
+    """
     print(f"\n  Searching '{keyword}'...")
 
     token, playlists = search_with_token(session, token, keyword, max_playlists)
     print(f"  Found {len(playlists)} playlists")
 
     results = []
-    api_fails = 0
 
-    for pl in tqdm(playlists, desc=f"  Checking '{keyword}'", unit="pl"):
+    for pl in playlists:
         if not pl or not pl.get("id"):
             continue
 
@@ -230,20 +239,17 @@ def scrape_keyword(session, token, keyword, seen_ids, max_playlists=50):
         seen_ids.add(pid)
 
         name = pl.get("name", "")
-        playlist_url = f"https://open.spotify.com/playlist/{pid}"
+        description = pl.get("description", "") or ""
+        playlist_url = pl.get("external_urls", {}).get("spotify",
+                        f"https://open.spotify.com/playlist/{pid}")
 
-        # Try API first
-        token, full = get_description_from_api(session, token, pid)
-
-        if full:
-            description = full.get("description", "") or ""
-            name = full.get("name", name)
-            playlist_url = full.get("external_urls", {}).get("spotify", playlist_url)
-        else:
-            # Fallback: scrape the page directly
-            api_fails += 1
-            description = get_description_from_page(session, pid)
-            time.sleep(1)
+        # Decode HTML entities in description
+        description = (
+            description.replace("&amp;", "&")
+            .replace("&#x2F;", "/")
+            .replace("&#39;", "'")
+            .replace("&quot;", '"')
+        )
 
         emails, instagrams = extract_contacts(description)
 
@@ -261,31 +267,77 @@ def scrape_keyword(session, token, keyword, seen_ids, max_playlists=50):
 
         print(f"    HIT: {name} | emails={emails} ig={instagrams}")
 
-    if api_fails > 0:
-        print(f"  (Used page scraping fallback for {api_fails} playlists)")
-
     return token, results
 
 
 def main():
-    keywords = sys.argv[1:] if len(sys.argv) > 1 else [
-        "Jazz Rap",
-        "Alternative Hip Hop",
-        "Conscious Hip Hop",
-        "Rap",
-        "Pop Rap",
+    default_keywords = [
+        # Submit-focused searches (high hit rate for contacts)
+        "submit rap playlist", "submit hip hop", "submit music rap",
+        "submit beats playlist", "submit R&B playlist",
+        "submit trap playlist", "submit lofi playlist",
+        "rap playlist submit email", "hip hop playlist curators",
+        "indie rap submit", "underground submit playlist",
+        # Genre searches
+        "Jazz Rap", "Alternative Hip Hop", "Conscious Hip Hop", "Rap", "Pop Rap",
+        "Trap", "Drill", "Boom Bap", "Lo-fi Hip Hop", "Underground Hip Hop",
+        "Old School Hip Hop", "New School Rap", "Gangsta Rap", "Southern Hip Hop",
+        "West Coast Hip Hop", "East Coast Hip Hop", "Midwest Rap", "UK Rap",
+        "French Rap", "German Rap", "Latin Rap", "Spanish Rap",
+        "Trap Soul", "Cloud Rap", "Emo Rap", "Mumble Rap",
+        "Christian Hip Hop", "Political Rap", "Storytelling Rap",
+        "Rap Freestyle", "Cypher Rap", "Battle Rap",
+        "R&B", "Neo Soul", "Alternative R&B", "Modern R&B",
+        "Soul Music", "Funk", "Contemporary R&B",
+        "Hip Hop Beats", "Rap Instrumentals", "Type Beat",
+        "Boom Bap Beats", "Trap Beats", "Lo-fi Beats",
+        "Study Beats", "Chill Beats", "Freestyle Beats",
+        "Chill Rap", "Hype Rap", "Sad Rap", "Party Rap",
+        "Workout Rap", "Gym Hip Hop", "Drive Rap",
+        "Late Night Hip Hop", "Summer Rap", "Vibes Hip Hop",
+        "Hip Hop Soul", "Rap Rock", "Hip Hop EDM",
+        "Afrobeats Hip Hop", "Dancehall Rap", "Reggaeton Rap",
+        "Underground Rap", "Indie Hip Hop", "New Rap",
+        "Undiscovered Rap", "Small Artist Rap", "Up and Coming Rap",
+        "Fresh Hip Hop", "Hidden Gems Rap", "Unsigned Rapper",
+        "Independent Hip Hop", "Bedroom Rapper",
+        # More submit-focused
+        "playlist submission rap", "accepting submissions hip hop",
+        "send beats playlist", "curated rap playlist",
+        "new artist rap playlist", "promote rap music",
+        "rap playlist email", "hip hop email submit",
+        "independent artist playlist", "unsigned artist playlist",
     ]
+    keywords = sys.argv[1:] if len(sys.argv) > 1 else default_keywords
 
     session = make_session()
+
+    # Load existing results to avoid redoing work
+    all_results = []
+    seen_ids = set()
+    done_keywords = set()
+    try:
+        with open("output.csv", "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                all_results.append(row)
+                # Extract playlist ID from URL
+                url = row.get("playlist_url", "")
+                if "/playlist/" in url:
+                    seen_ids.add(url.split("/playlist/")[-1])
+                done_keywords.add(row.get("keyword", ""))
+        print(f"Loaded {len(all_results)} existing results, {len(seen_ids)} playlist IDs")
+    except FileNotFoundError:
+        pass
 
     print("Getting Spotify token...")
     token = get_token(session)
     print("Token acquired!\n")
 
-    all_results = []
-    seen_ids = set()
-
     for keyword in keywords:
+        if keyword in done_keywords:
+            print(f"\nSkipping '{keyword}' (already done)")
+            continue
         print(f"\n{'='*50}")
         print(f"Keyword: {keyword}")
         print(f"{'='*50}")
@@ -305,7 +357,7 @@ def main():
         except Exception:
             pass
 
-        time.sleep(5)
+        time.sleep(10)
 
     print(f"\n{'='*50}")
     if all_results:
