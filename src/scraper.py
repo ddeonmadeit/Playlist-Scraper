@@ -15,7 +15,7 @@ INSTAGRAM_REGEX = re.compile(r"(?:instagram|ig|insta)[:\s/@]*@?([a-zA-Z0-9_.]{1,
 MAX_SEARCH_OFFSET = 1000
 SEARCH_LIMIT = 10
 DEFAULT_MAX_RESULTS = None  # No limit by default
-REQUEST_DELAY = 0.3
+REQUEST_DELAY = 1.5
 
 # Known Spotify editorial playlists used to fetch anonymous tokens from embed pages
 TOKEN_PLAYLISTS = [
@@ -57,24 +57,31 @@ def get_anonymous_token():
 
 
 def api_request(token, url, params=None):
-    """Make a Spotify API request with rate-limit handling and retries."""
-    headers = {"Authorization": f"Bearer {token}"}
+    """Make a Spotify API request with rate-limit handling and retries.
+
+    Returns (new_token, json_data) — token may be refreshed after rate limits.
+    """
     max_retries = 5
+    current_token = token
 
     for attempt in range(max_retries):
+        headers = {"Authorization": f"Bearer {current_token}"}
         resp = requests.get(url, headers=headers, params=params, timeout=15, verify=False)
 
         if resp.status_code == 200:
             time.sleep(REQUEST_DELAY)
-            return resp.json()
+            return current_token, resp.json()
         elif resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
-            # Cap the wait at 60s per retry to avoid extremely long waits
-            retry_after = min(retry_after, 60)
-            print(f"  Rate limited. Retrying in {retry_after}s...")
+            retry_after = int(resp.headers.get("Retry-After", 5 * (attempt + 1)))
+            retry_after = min(retry_after, 90)
+            print(f"  Rate limited. Waiting {retry_after}s then refreshing token...")
             time.sleep(retry_after)
+            try:
+                current_token = get_anonymous_token()
+            except RuntimeError:
+                pass  # Keep using current token if refresh fails
         elif resp.status_code == 400:
-            return None
+            return current_token, None
         elif resp.status_code == 401:
             raise RuntimeError("TOKEN_EXPIRED")
         else:
@@ -84,7 +91,10 @@ def api_request(token, url, params=None):
 
 
 def search_playlists(token, keyword, max_results=None):
-    """Search for playlists by keyword, paginating up to the 1000 offset limit."""
+    """Search for playlists by keyword, paginating up to the 1000 offset limit.
+
+    Returns (token, playlists) — token may be refreshed during pagination.
+    """
     playlists = []
     offset = 0
     url = "https://api.spotify.com/v1/search"
@@ -100,7 +110,7 @@ def search_playlists(token, keyword, max_results=None):
                 "limit": SEARCH_LIMIT,
                 "offset": offset,
             }
-            results = api_request(token, url, params)
+            token, results = api_request(token, url, params)
             if not results:
                 break
 
@@ -114,11 +124,14 @@ def search_playlists(token, keyword, max_results=None):
 
     if max_results:
         playlists = playlists[:max_results]
-    return playlists
+    return token, playlists
 
 
 def get_full_playlist(token, playlist_id):
-    """Fetch full playlist details (search results truncate descriptions)."""
+    """Fetch full playlist details (search results truncate descriptions).
+
+    Returns (token, data) — token may be refreshed.
+    """
     url = f"https://api.spotify.com/v1/playlists/{playlist_id}"
     params = {"fields": "id,name,description,external_urls"}
     return api_request(token, url, params)
@@ -144,12 +157,12 @@ def scrape_keyword(token, keyword, seen_playlist_ids, max_results=None):
     Returns (token, results) — token may be refreshed if it expired mid-run.
     """
     try:
-        playlists = search_playlists(token, keyword, max_results=max_results)
+        token, playlists = search_playlists(token, keyword, max_results=max_results)
     except RuntimeError as e:
         if "TOKEN_EXPIRED" in str(e):
             print("  Token expired, refreshing...")
             token = get_anonymous_token()
-            playlists = search_playlists(token, keyword, max_results=max_results)
+            token, playlists = search_playlists(token, keyword, max_results=max_results)
         else:
             raise
 
@@ -165,12 +178,12 @@ def scrape_keyword(token, keyword, seen_playlist_ids, max_results=None):
         seen_playlist_ids.add(playlist_id)
 
         try:
-            full = get_full_playlist(token, playlist_id)
+            token, full = get_full_playlist(token, playlist_id)
         except RuntimeError as e:
             if "TOKEN_EXPIRED" in str(e):
                 print("  Token expired, refreshing...")
                 token = get_anonymous_token()
-                full = get_full_playlist(token, playlist_id)
+                token, full = get_full_playlist(token, playlist_id)
             else:
                 raise
 
