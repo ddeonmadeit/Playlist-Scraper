@@ -1,73 +1,106 @@
 import csv
-import os
 import re
 import sys
 import time
+import urllib3
 
-import spotipy
-from dotenv import load_dotenv
-from spotipy.oauth2 import SpotifyClientCredentials
+import requests
 from tqdm import tqdm
 
-load_dotenv()
-
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 INSTAGRAM_REGEX = re.compile(r"(?:instagram|ig|insta)[:\s/@]*@?([a-zA-Z0-9_.]{1,30})", re.IGNORECASE)
 
 MAX_SEARCH_OFFSET = 1000
 SEARCH_LIMIT = 10
-API_DELAY = 0.1
+REQUEST_DELAY = 0.3
+
+# Known Spotify editorial playlists used to fetch anonymous tokens from embed pages
+TOKEN_PLAYLISTS = [
+    "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
+    "37i9dQZF1DX0XUsuxWHRQd",  # RapCaviar
+    "37i9dQZF1DWXRqgorJj26U",  # Rock Classics
+    "37i9dQZF1DX4sWSpwq3LiO",  # Peaceful Piano
+]
 
 
-def get_spotify_client():
-    """Authenticate and return a Spotify client using client_credentials flow."""
-    auth_manager = SpotifyClientCredentials(
-        client_id=SPOTIFY_CLIENT_ID,
-        client_secret=SPOTIFY_CLIENT_SECRET,
-    )
-    return spotipy.Spotify(auth_manager=auth_manager)
+def get_anonymous_token():
+    """Get an anonymous Spotify access token by scraping an embed page.
 
+    No API credentials needed — the embed page includes a short-lived
+    access token that works with the standard Spotify Web API.
+    """
+    session = requests.Session()
+    session.verify = False
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    })
 
-def api_call_with_backoff(func, *args, **kwargs):
-    """Execute a Spotify API call with rate-limit handling and delay."""
-    max_retries = 5
-    for attempt in range(max_retries):
+    for playlist_id in TOKEN_PLAYLISTS:
+        url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
         try:
-            result = func(*args, **kwargs)
-            time.sleep(API_DELAY)
-            return result
-        except spotipy.exceptions.SpotifyException as e:
-            if e.http_status == 429:
-                retry_after = int(e.headers.get("Retry-After", 2 ** attempt))
-                print(f"  Rate limited. Retrying in {retry_after}s...")
-                time.sleep(retry_after)
-            elif e.http_status == 400:
-                return None
-            else:
-                raise
-    raise RuntimeError(f"API call failed after {max_retries} retries")
+            resp = session.get(url, timeout=15)
+            resp.raise_for_status()
+            tokens = re.findall(r'"accessToken":"([^"]+)"', resp.text)
+            if tokens:
+                return tokens[0]
+        except requests.RequestException:
+            continue
+
+    raise RuntimeError(
+        "Failed to get anonymous Spotify token from any embed page. "
+        "Spotify may be blocking requests from this IP."
+    )
 
 
-def search_playlists(sp, keyword):
+def api_request(token, url, params=None):
+    """Make a Spotify API request with rate-limit handling and retries."""
+    headers = {"Authorization": f"Bearer {token}"}
+    max_retries = 5
+
+    for attempt in range(max_retries):
+        resp = requests.get(url, headers=headers, params=params, timeout=15, verify=False)
+
+        if resp.status_code == 200:
+            time.sleep(REQUEST_DELAY)
+            return resp.json()
+        elif resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
+            # Cap the wait at 60s per retry to avoid extremely long waits
+            retry_after = min(retry_after, 60)
+            print(f"  Rate limited. Retrying in {retry_after}s...")
+            time.sleep(retry_after)
+        elif resp.status_code == 400:
+            return None
+        elif resp.status_code == 401:
+            raise RuntimeError("TOKEN_EXPIRED")
+        else:
+            resp.raise_for_status()
+
+    raise RuntimeError(f"API call failed after {max_retries} retries (rate limited)")
+
+
+def search_playlists(token, keyword):
     """Search for playlists by keyword, paginating up to the 1000 offset limit."""
     playlists = []
     offset = 0
+    url = "https://api.spotify.com/v1/search"
 
     with tqdm(desc=f"Searching '{keyword}'", unit="playlist") as pbar:
         while offset < MAX_SEARCH_OFFSET:
-            results = api_call_with_backoff(
-                sp.search,
-                q=keyword,
-                type="playlist",
-                limit=SEARCH_LIMIT,
-                offset=offset,
-            )
+            params = {
+                "q": keyword,
+                "type": "playlist",
+                "limit": SEARCH_LIMIT,
+                "offset": offset,
+            }
+            results = api_request(token, url, params)
             if not results:
                 break
-            items = results["playlists"]["items"]
+
+            items = results.get("playlists", {}).get("items", [])
             if not items:
                 break
 
@@ -78,9 +111,11 @@ def search_playlists(sp, keyword):
     return playlists
 
 
-def get_full_playlist(sp, playlist_id):
+def get_full_playlist(token, playlist_id):
     """Fetch full playlist details (search results truncate descriptions)."""
-    return api_call_with_backoff(sp.playlist, playlist_id, fields="id,name,description,external_urls")
+    url = f"https://api.spotify.com/v1/playlists/{playlist_id}"
+    params = {"fields": "id,name,description,external_urls"}
+    return api_request(token, url, params)
 
 
 def extract_emails(text):
@@ -97,9 +132,21 @@ def extract_instagrams(text):
     return INSTAGRAM_REGEX.findall(text)
 
 
-def scrape_keyword(sp, keyword, seen_playlist_ids):
-    """Search playlists for a keyword and extract emails/instagrams from descriptions."""
-    playlists = search_playlists(sp, keyword)
+def scrape_keyword(token, keyword, seen_playlist_ids):
+    """Search playlists for a keyword and extract emails/instagrams from descriptions.
+
+    Returns (token, results) — token may be refreshed if it expired mid-run.
+    """
+    try:
+        playlists = search_playlists(token, keyword)
+    except RuntimeError as e:
+        if "TOKEN_EXPIRED" in str(e):
+            print("  Token expired, refreshing...")
+            token = get_anonymous_token()
+            playlists = search_playlists(token, keyword)
+        else:
+            raise
+
     results = []
 
     for playlist in tqdm(playlists, desc=f"Fetching details for '{keyword}'", unit="playlist"):
@@ -111,7 +158,16 @@ def scrape_keyword(sp, keyword, seen_playlist_ids):
             continue
         seen_playlist_ids.add(playlist_id)
 
-        full = get_full_playlist(sp, playlist_id)
+        try:
+            full = get_full_playlist(token, playlist_id)
+        except RuntimeError as e:
+            if "TOKEN_EXPIRED" in str(e):
+                print("  Token expired, refreshing...")
+                token = get_anonymous_token()
+                full = get_full_playlist(token, playlist_id)
+            else:
+                raise
+
         if not full:
             continue
         description = full.get("description", "") or ""
@@ -135,7 +191,7 @@ def scrape_keyword(sp, keyword, seen_playlist_ids):
             "description_snippet": snippet,
         })
 
-    return results
+    return token, results
 
 
 def save_to_csv(rows, filename="output.csv"):
@@ -158,22 +214,25 @@ def save_to_csv(rows, filename="output.csv"):
 
 
 def main():
-    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
-        print("Error: Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env")
-        return
-
     if len(sys.argv) < 2:
         print(f"Usage: python {sys.argv[0]} <keyword1> [keyword2] ...")
         return
 
     keywords = sys.argv[1:]
-    sp = get_spotify_client()
+
+    print("Getting anonymous Spotify token (no API key needed)...")
+    try:
+        token = get_anonymous_token()
+        print("Token acquired!\n")
+    except Exception as e:
+        print(f"Error getting token: {e}")
+        return
 
     all_results = []
     seen_playlist_ids = set()
     for keyword in keywords:
         print(f"\nProcessing keyword: {keyword}")
-        results = scrape_keyword(sp, keyword, seen_playlist_ids)
+        token, results = scrape_keyword(token, keyword, seen_playlist_ids)
         all_results.extend(results)
         print(f"  Found {len(results)} playlist(s) with contact info for '{keyword}'")
 
