@@ -15,6 +15,7 @@ SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+INSTAGRAM_REGEX = re.compile(r"(?:instagram|ig|insta)[:\s/@]*@?([a-zA-Z0-9_.]{1,30})", re.IGNORECASE)
 
 MAX_SEARCH_OFFSET = 1000
 SEARCH_LIMIT = 10
@@ -89,8 +90,15 @@ def extract_emails(text):
     return EMAIL_REGEX.findall(text)
 
 
-def scrape_keyword(sp, keyword):
-    """Search playlists for a keyword and extract emails from full descriptions."""
+def extract_instagrams(text):
+    """Extract Instagram handles from text using regex."""
+    if not text:
+        return []
+    return INSTAGRAM_REGEX.findall(text)
+
+
+def scrape_keyword(sp, keyword, seen_playlist_ids):
+    """Search playlists for a keyword and extract emails/instagrams from descriptions."""
     playlists = search_playlists(sp, keyword)
     results = []
 
@@ -98,38 +106,49 @@ def scrape_keyword(sp, keyword):
         if not playlist or not playlist.get("id"):
             continue
 
-        full = get_full_playlist(sp, playlist["id"])
+        playlist_id = playlist["id"]
+        if playlist_id in seen_playlist_ids:
+            continue
+        seen_playlist_ids.add(playlist_id)
+
+        full = get_full_playlist(sp, playlist_id)
+        if not full:
+            continue
         description = full.get("description", "") or ""
         emails = extract_emails(description)
+        instagrams = extract_instagrams(description)
 
-        if not emails:
+        if not emails and not instagrams:
             continue
 
         snippet = description[:100].replace("\n", " ")
         playlist_url = full.get("external_urls", {}).get("spotify", "")
+        instagram_str = ", ".join(instagrams) if instagrams else ""
+        email_str = ", ".join(emails) if emails else ""
 
-        for email in emails:
-            results.append({
-                "email": email,
-                "playlist_name": full.get("name", ""),
-                "playlist_url": playlist_url,
-                "keyword": keyword,
-                "description_snippet": snippet,
-            })
+        results.append({
+            "email": email_str,
+            "instagram": instagram_str,
+            "playlist_name": full.get("name", ""),
+            "playlist_url": playlist_url,
+            "keyword": keyword,
+            "description_snippet": snippet,
+        })
 
     return results
 
 
 def save_to_csv(rows, filename="output.csv"):
-    """Save results to CSV, deduplicating by email address."""
+    """Save results to CSV, deduplicating by playlist URL."""
     seen = set()
     unique_rows = []
     for row in rows:
-        if row["email"] not in seen:
-            seen.add(row["email"])
+        key = row["playlist_url"]
+        if key not in seen:
+            seen.add(key)
             unique_rows.append(row)
 
-    fieldnames = ["email", "playlist_name", "playlist_url", "keyword", "description_snippet"]
+    fieldnames = ["email", "instagram", "playlist_name", "playlist_url", "keyword", "description_snippet"]
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -151,17 +170,18 @@ def main():
     sp = get_spotify_client()
 
     all_results = []
+    seen_playlist_ids = set()
     for keyword in keywords:
         print(f"\nProcessing keyword: {keyword}")
-        results = scrape_keyword(sp, keyword)
+        results = scrape_keyword(sp, keyword, seen_playlist_ids)
         all_results.extend(results)
-        print(f"  Found {len(results)} email(s) for '{keyword}'")
+        print(f"  Found {len(results)} playlist(s) with contact info for '{keyword}'")
 
     if all_results:
         count = save_to_csv(all_results)
-        print(f"\nSaved {count} unique email(s) to output.csv")
+        print(f"\nSaved {count} unique playlist(s) to output.csv")
     else:
-        print("\nNo emails found across any keywords.")
+        print("\nNo playlists with email/instagram found across any keywords.")
 
 
 if __name__ == "__main__":
