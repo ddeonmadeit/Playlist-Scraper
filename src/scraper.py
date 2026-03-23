@@ -1,8 +1,10 @@
 import csv
+import os
 import re
 import sys
 import time
 import urllib3
+from datetime import datetime
 
 import requests
 from tqdm import tqdm
@@ -260,7 +262,23 @@ def save_to_csv(rows, filename="output.csv", existing_rows=None, existing_urls=N
         writer.writeheader()
         writer.writerows(all_rows)
 
-    return len(new_rows), len(all_rows)
+    return len(new_rows), len(all_rows), new_rows
+
+
+def save_new_contacts_csv(new_rows):
+    """Save only the new contacts from this run to a timestamped CSV in the runs/ folder."""
+    if not new_rows:
+        return None
+    runs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runs")
+    os.makedirs(runs_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = os.path.join(runs_dir, f"new_contacts_{timestamp}.csv")
+    fieldnames = ["email", "instagram", "playlist_name", "playlist_url", "keyword", "description_snippet"]
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(new_rows)
+    return filename
 
 
 def main():
@@ -302,8 +320,11 @@ def main():
         print(f"  Found {len(results)} new playlist(s) with contact info for '{keyword}'")
 
     if all_results:
-        new_count, total_count = save_to_csv(all_results, existing_rows=existing_rows, existing_urls=existing_urls)
+        new_count, total_count, new_rows = save_to_csv(all_results, existing_rows=existing_rows, existing_urls=existing_urls)
         print(f"\nAdded {new_count} new playlist(s) — {total_count} total in output.csv")
+        run_file = save_new_contacts_csv(new_rows)
+        if run_file:
+            print(f"New contacts saved to {run_file}")
     else:
         print("\nNo new playlists found. output.csv unchanged.")
 

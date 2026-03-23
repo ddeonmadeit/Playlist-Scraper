@@ -6,10 +6,12 @@ Search results include playlist descriptions — no per-playlist API calls neede
 
 import csv
 import html as html_mod
+import os
 import re
 import sys
 import time
 import random
+from datetime import datetime
 
 import requests
 import urllib3
@@ -251,6 +253,22 @@ def save_csv(rows, filename="output.csv"):
     return len(rows)
 
 
+def save_new_contacts_csv(new_rows):
+    """Save only the new contacts from this run to a timestamped CSV in the runs/ folder."""
+    if not new_rows:
+        return None
+    runs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runs")
+    os.makedirs(runs_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = os.path.join(runs_dir, f"new_contacts_{timestamp}.csv")
+    fieldnames = ["email", "instagram", "playlist_name", "playlist_url", "keyword", "description_snippet"]
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(new_rows)
+    return filename
+
+
 def main():
     keywords = [
         # High-yield submit keywords
@@ -318,6 +336,7 @@ def main():
         return
 
     all_rows = list(existing_rows)
+    new_rows_this_run = []
     total_new = 0
     consecutive_rate_limits = 0
 
@@ -333,6 +352,7 @@ def main():
         )
 
         all_rows.extend(results)
+        new_rows_this_run.extend(results)
         total_new += len(results)
 
         for r in results:
@@ -360,8 +380,11 @@ def main():
             time.sleep(random.uniform(3, 5))
 
     count = save_csv(all_rows)
+    run_file = save_new_contacts_csv(new_rows_this_run)
     print(f"\n{'=' * 60}")
     print(f"DONE! +{total_new} new contacts this run. {count} total in output.csv")
+    if run_file:
+        print(f"New contacts saved to {run_file}")
     print(f"{'=' * 60}")
 
 
