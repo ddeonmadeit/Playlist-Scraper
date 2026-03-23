@@ -185,7 +185,7 @@ def api_search_keyword(pool, keyword, seen_ids, seen_contacts, session):
 
             offset += 50
             # Conservative pacing to avoid rate limits
-            time.sleep(2)
+            time.sleep(random.uniform(3, 6))
 
             # Proactively rotate token every 3 pages
             if offset % 150 == 0:
@@ -193,20 +193,28 @@ def api_search_keyword(pool, keyword, seen_ids, seen_contacts, session):
 
         elif resp.status_code == 429:
             retry_after = int(resp.headers.get("Retry-After", 30))
+            # Cap absurd retry values — get fresh tokens instead
+            if retry_after > 120:
+                print(f"    Rate limited ({retry_after}s requested). Refreshing all tokens and waiting 60s...")
+                pool.tokens.clear()
+                pool.burned.clear()
+                time.sleep(60)
+                pool.fill(4)
+                if not pool.tokens:
+                    rate_limited = True
+                    break
+                continue
             if pool.rotate():
-                # Try next token immediately
-                time.sleep(1)
+                time.sleep(3)
                 continue
-            # All tokens hit — short wait then try fresh token
-            if retry_after <= 30:
-                print(f"    Rate limited ({retry_after}s), waiting...")
-                time.sleep(retry_after + 2)
-                pool.refresh_one()
+            # All tokens hit — wait then get fresh tokens
+            print(f"    Rate limited ({retry_after}s), waiting and refreshing...")
+            time.sleep(min(retry_after + 2, 60))
+            pool.fill(4)
+            if pool.tokens:
                 continue
-            else:
-                print(f"    Heavy rate limit ({retry_after}s), stopping keyword")
-                rate_limited = True
-                break
+            rate_limited = True
+            break
 
         elif resp.status_code == 401:
             pool.mark_burned(token)
@@ -421,9 +429,69 @@ def main():
         "blues playlist submit", "rhythm and blues playlist",
         "blues rock playlist submit", "electric blues playlist",
         "gospel playlist submit", "gospel soul playlist",
+        # --- Underground / indie scene ---
+        "underground music playlist submit", "underground artist playlist",
+        "underground rap playlist email", "underground hip hop submit",
+        "underground R&B playlist submit", "underground soul playlist",
+        "underground lofi playlist", "underground beats playlist submit",
+        "underground pop playlist", "underground rock playlist submit",
+        "underground electronic playlist", "underground dance playlist submit",
+        "underground house playlist", "underground techno playlist submit",
+        "underground bass playlist", "underground dubstep playlist",
+        "underground grime playlist submit", "underground garage playlist",
+        "underground afrobeats playlist", "underground reggae playlist submit",
+        "underground punk playlist", "underground metal playlist",
+        "underground folk playlist submit", "underground country playlist",
+        "underground Latin playlist", "underground world music playlist",
+        "hidden gems playlist submit", "hidden gems hip hop playlist",
+        "hidden gems R&B playlist", "hidden gems indie playlist submit",
+        "undiscovered artists playlist", "undiscovered music playlist submit",
+        "unsigned artists playlist", "unsigned rapper playlist submit",
+        "unsigned singer playlist", "independent music playlist submit",
+        "independent rapper playlist", "independent artist playlist email",
+        "up and coming artist playlist", "up and coming rapper playlist submit",
+        "emerging artist playlist", "emerging rapper playlist submit",
+        "new artist playlist submit", "new music playlist email",
+        "fresh finds playlist submit", "fresh music playlist",
+        "discover weekly type playlist", "music discovery playlist submit",
+        # --- More electronic/dance (high submit culture) ---
+        "submit EDM playlist", "submit house playlist",
+        "submit techno playlist", "submit trance playlist",
+        "submit DnB playlist", "submit drum and bass playlist",
+        "submit dubstep playlist", "submit bass music playlist",
+        "submit future bass playlist", "submit melodic dubstep playlist",
+        "submit deep house playlist", "submit tech house playlist",
+        "submit progressive house playlist", "submit tropical house playlist",
+        "submit garage playlist", "submit UK garage playlist",
+        "submit jungle playlist", "submit breakbeat playlist",
+        "submit hardstyle playlist", "submit psytrance playlist",
+        "submit ambient electronic playlist", "submit downtempo playlist",
+        "submit chillwave playlist", "submit vaporwave playlist",
+        "submit synthwave playlist", "submit retrowave playlist",
+        # --- Pop / mainstream crossover ---
+        "submit pop playlist", "pop playlist submit email",
+        "submit dance pop playlist", "submit electro pop playlist",
+        "submit pop rock playlist", "submit power pop playlist",
+        "submit K-pop playlist", "submit J-pop playlist",
+        "submit Afropop playlist", "submit Latin pop playlist",
+        "submit Bollywood playlist", "submit Arabic pop playlist",
+        "submit Turkish pop playlist", "submit reggaeton playlist email",
+        # --- Country / Americana ---
+        "submit country playlist", "country playlist submit email",
+        "submit country rap playlist", "submit outlaw country playlist",
+        "submit Americana playlist", "submit folk country playlist",
+        "submit bluegrass playlist", "submit country rock playlist",
+        # --- Metal / Hard Rock ---
+        "submit metal playlist", "metal playlist submit email",
+        "submit heavy metal playlist", "submit death metal playlist",
+        "submit metalcore playlist", "submit deathcore playlist",
+        "submit progressive metal playlist", "submit doom metal playlist",
+        "submit black metal playlist", "submit thrash metal playlist",
+        "submit hard rock playlist", "submit punk rock playlist",
+        "submit hardcore playlist", "submit screamo playlist",
     ]
 
-    target = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 200
+    target = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 750
 
     existing_rows, seen_contacts, seen_ids = load_existing()
     print(f"Loaded {len(existing_rows)} existing entries ({len(seen_contacts)} unique contacts)")
@@ -473,20 +541,27 @@ def main():
 
         if rate_limited:
             consecutive_rate_limits += 1
-            if consecutive_rate_limits >= 3:
+            if consecutive_rate_limits >= 5:
+                print("\n  Persistent rate limiting. Long pause (120s) to fully recover...")
+                time.sleep(120)
+                pool.tokens.clear()
+                pool.burned.clear()
+                pool.fill(4)
+                consecutive_rate_limits = 0
+            elif consecutive_rate_limits >= 3:
                 print("\n  Heavy rate limiting. Pausing 60s to recover...")
                 time.sleep(60)
                 pool.fill(4)
                 consecutive_rate_limits = 0
             else:
-                time.sleep(10)
+                time.sleep(15)
                 pool.refresh_one()
         else:
             consecutive_rate_limits = 0
             # Proactive token refresh every 5 keywords
             if i % 5 == 4:
                 pool.refresh_one()
-            time.sleep(random.uniform(3, 5))
+            time.sleep(random.uniform(4, 7))
 
     count = save_csv(all_rows)
     run_file = save_new_contacts_csv(new_rows_this_run)

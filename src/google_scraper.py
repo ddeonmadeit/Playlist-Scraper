@@ -147,47 +147,110 @@ def save_csv(rows, filename="output.csv"):
 
 def main():
     default_keywords = [
-        # User-specified genres with submit focus
-        "submit study beats", "submit jazzhop", "submit jazz hop",
-        "submit chillhop", "submit chill hop",
-        "submit hip hop", "submit conscious hip hop",
-        "submit rap", "submit pop rap",
-        "submit neo soul", "submit neo-soul",
-        "submit bedroom pop", "submit lo-fi pop", "submit lofi pop",
-        "submit alternative R&B", "submit indie R&B",
-        "submit Latin hip hop", "submit boom bap",
-        # Genre + playlist + submit
-        "study beats playlist submit", "jazz hop playlist submit",
-        "chill hop playlist submit", "hip hop playlist submit",
-        "conscious hip hop playlist", "rap playlist submit",
-        "pop rap playlist submit", "neo soul playlist submit",
-        "bedroom pop playlist submit", "lofi playlist submit",
-        "alternative R&B playlist", "indie R&B playlist submit",
-        "Latin hip hop playlist", "boom bap playlist submit",
-        # Email-focused queries
+        # Core submit keywords
+        "submit rap playlist", "submit hip hop playlist",
+        "submit lofi playlist", "submit R&B playlist",
+        "submit beats playlist", "submit neo soul playlist",
+        "submit boom bap playlist", "submit jazz hop playlist",
+        "submit chill hop playlist", "submit study beats playlist",
+        "submit bedroom pop playlist", "submit conscious rap playlist",
+        "submit alternative hip hop", "submit indie hip hop",
+        "submit soul playlist", "submit afrobeats playlist",
+        "submit trap playlist", "submit drill playlist",
+        "submit phonk playlist", "submit cloud rap playlist",
+        "submit emo rap playlist", "submit UK rap playlist",
+        # Email-focused
         "spotify playlist submit email rap",
         "spotify playlist submit email hip hop",
         "spotify playlist submit email R&B",
         "spotify playlist submit email lofi",
         "spotify playlist curators email",
-        "hip hop playlist curators contact",
         "rap playlist curators contact email",
+        "hip hop playlist curators contact",
         "R&B playlist curators email",
         "lofi playlist curators email",
-        # More broad searches
-        "spotify submit your song playlist",
-        "spotify accepting submissions playlist",
-        "underground hip hop submit playlist",
+        "playlist submission email contact",
+        # Underground / indie
+        "underground rap playlist submit",
+        "underground hip hop playlist email",
+        "underground R&B playlist submit",
+        "underground lofi playlist submit",
+        "underground music playlist contact",
+        "underground artist playlist email",
+        "hidden gems playlist submit",
+        "hidden gems hip hop playlist",
+        "hidden gems rap playlist email",
+        "undiscovered artists playlist submit",
+        "unsigned artist playlist email",
         "independent artist playlist submit",
-        "new artist rap playlist submit",
-        "indie rap playlist submit",
-        "chill rap playlist submit",
-        "alternative hip hop submit",
-        "afrobeats playlist submit",
-        "latin rap playlist submit",
-        "soul playlist submit",
-        "jazz rap playlist submit",
-        "conscious rap playlist submit",
+        "independent rapper playlist email",
+        "up and coming artist playlist",
+        "emerging artist playlist submit",
+        "new artist playlist submit email",
+        "fresh finds playlist submit",
+        # Genre playlist + submit
+        "study beats playlist submit", "jazz hop playlist submit",
+        "chill hop playlist submit", "hip hop playlist submit",
+        "rap playlist submit", "pop rap playlist submit",
+        "neo soul playlist submit", "bedroom pop playlist submit",
+        "lofi playlist submit", "alternative R&B playlist submit",
+        "indie R&B playlist submit", "boom bap playlist submit",
+        "trap music playlist submit", "drill playlist submit",
+        "melodic rap playlist submit", "lyrical rap playlist submit",
+        "conscious rap playlist submit", "jazz rap playlist submit",
+        # Regional
+        "UK hip hop playlist submit", "Canadian hip hop playlist submit",
+        "Australian hip hop playlist", "French rap playlist submit",
+        "German hip hop playlist", "Atlanta rap playlist submit",
+        "NYC rap playlist submit", "LA rap playlist submit",
+        "Chicago rap playlist submit", "Detroit rap playlist submit",
+        "Southern rap playlist submit", "West coast hip hop playlist",
+        # Electronic / dance
+        "submit EDM playlist", "submit house playlist",
+        "submit techno playlist", "submit deep house playlist",
+        "submit future bass playlist", "submit dubstep playlist",
+        "submit DnB playlist", "submit synthwave playlist",
+        "submit ambient playlist", "submit downtempo playlist",
+        "submit chillwave playlist", "submit vaporwave playlist",
+        # Pop / mainstream
+        "submit pop playlist", "submit indie pop playlist",
+        "submit electropop playlist", "submit K-pop playlist",
+        "submit Latin pop playlist", "submit Afropop playlist",
+        # Rock / alternative
+        "submit indie rock playlist", "submit alternative playlist",
+        "submit dream pop playlist", "submit shoegaze playlist",
+        "submit post punk playlist", "submit emo playlist",
+        "submit punk rock playlist", "submit metal playlist",
+        "submit progressive rock playlist", "submit psychedelic playlist",
+        # More patterns
+        "spotify accepting submissions playlist",
+        "spotify submit your song playlist",
+        "spotify playlist accepting music",
+        "send beats to playlist curators",
+        "promote your music playlist submit",
+        "indie playlist curators email",
+        "soul playlist curators contact",
+        "jazz playlist submit email",
+        "blues playlist submit",
+        "gospel playlist submit",
+        "funk playlist submit email",
+        "reggae playlist submit",
+        "afrobeats playlist curators",
+        "Latin playlist submit email",
+        "country playlist submit",
+        "folk playlist submit email",
+        "Americana playlist submit",
+        # More underground
+        "DIY music playlist submit",
+        "small artist playlist submit email",
+        "SoundCloud rap playlist submit",
+        "backpack rap playlist email",
+        "experimental hip hop playlist",
+        "abstract hip hop playlist submit",
+        "lo-fi indie playlist submit",
+        "college radio playlist submit",
+        "underground electronic playlist",
+        "underground bass music playlist",
     ]
 
     keywords = sys.argv[1:] if len(sys.argv) > 1 else default_keywords
@@ -250,8 +313,8 @@ def main():
         print(f"  => +{new_for_keyword} new | {count} total in output.csv ({new_total} added this run)")
 
         # Check if we've hit our target
-        if count >= 5000:
-            print(f"\n  Reached target of 5000+ contacts!")
+        if count >= 1500:
+            print(f"\n  Reached target of 1500+ contacts!")
             break
 
         time.sleep(random.uniform(5, 10))
