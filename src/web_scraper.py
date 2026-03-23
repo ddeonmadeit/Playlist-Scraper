@@ -1,383 +1,368 @@
-"""Spotify playlist curator scraper — web scraping approach.
+"""Fast Spotify playlist curator scraper.
 
-Scrapes Spotify search results and playlist pages directly via HTTP,
-without using the Spotify API. This avoids API rate limits entirely.
+Uses Spotify API search with token rotation and conservative pacing.
+Search results include playlist descriptions — no per-playlist API calls needed.
 """
 
 import csv
+import html as html_mod
 import re
 import sys
 import time
-import urllib.parse
+import random
 
 import requests
-from tqdm import tqdm
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 INSTAGRAM_REGEX = re.compile(
     r"(?:instagram\.com/|(?:^|[\s|•·\-,])(?:ig|insta(?:gram)?)[:\s/@]+@?)([a-zA-Z0-9][a-zA-Z0-9_.]{2,29})",
     re.IGNORECASE | re.MULTILINE,
 )
-# Common false-positive words to filter out
 IG_STOPWORDS = {
     "for", "the", "and", "this", "that", "with", "from", "not", "are", "was",
     "but", "has", "had", "have", "will", "can", "all", "her", "his", "its",
     "our", "you", "com", "org", "net", "www", "http", "https",
+    "reel", "reels", "explore", "stories", "p",
+}
+EMAIL_BLACKLIST = {
+    "abuse@spotify.com", "support@spotify.com", "copyright@spotify.com",
+    "privacy@spotify.com", "legal@spotify.com",
 }
 
+TOKEN_PLAYLISTS = [
+    "37i9dQZF1DXcBWIGoYBM5M", "37i9dQZF1DX0XUsuxWHRQd",
+    "37i9dQZF1DWXRqgorJj26U", "37i9dQZF1DX4sWSpwq3LiO",
+    "37i9dQZF1DX1lVhptIYRda", "37i9dQZF1DXcF6B6QPhFDv",
+    "37i9dQZF1DWY4xHQp97fN6", "37i9dQZF1DX4JAvHpjipBk",
+    "37i9dQZF1DX10zKzsJ2jva", "37i9dQZF1DX76Wlfdnj7AP",
+    "37i9dQZF1DWWQRwui0ExPn", "37i9dQZF1DWZeKCadgRdKQ",
+]
 
-def make_session():
-    """Create a requests session that looks like a real browser."""
-    s = requests.Session()
-    s.verify = False
-    s.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-    })
-    return s
-
-
-def get_token(session):
-    """Get anonymous token from embed page."""
-    playlists = [
-        "37i9dQZF1DXcBWIGoYBM5M",
-        "37i9dQZF1DX0XUsuxWHRQd",
-        "37i9dQZF1DWXRqgorJj26U",
-        "37i9dQZF1DX4sWSpwq3LiO",
-        "37i9dQZF1DX1lVhptIYRda",
-        "37i9dQZF1DXcF6B6QPhFDv",
-    ]
-    for pid in playlists:
-        try:
-            resp = session.get(
-                f"https://open.spotify.com/embed/playlist/{pid}", timeout=15
-            )
-            tokens = re.findall(r'"accessToken":"([^"]+)"', resp.text)
-            if tokens:
-                return tokens[0]
-        except Exception:
-            continue
-    raise RuntimeError("Could not get token")
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+]
 
 
-def search_with_token(session, token, keyword, max_playlists=200):
-    """Search for playlists via API using the anonymous token."""
-    playlists = []
-    offset = 0
-    rate_limit_hits = 0
+class TokenPool:
+    """Pool of anonymous Spotify tokens with rotation on rate limits."""
 
-    while len(playlists) < max_playlists and offset < 1000:
-        resp = session.get(
-            "https://api.spotify.com/v1/search",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "q": keyword,
-                "type": "playlist",
-                "limit": 50,
-                "offset": offset,
-            },
-            timeout=15,
-        )
+    def __init__(self):
+        self.tokens = []
+        self.idx = 0
+        self.burned = set()
 
-        if resp.status_code == 429:
-            wait = int(resp.headers.get("Retry-After", 30))
-            rate_limit_hits += 1
-            if wait > 120 or rate_limit_hits > 3:
-                print(f"    Heavy rate limit ({wait}s), skipping rest of search...")
+    def fill(self, count=4):
+        s = requests.Session()
+        s.verify = False
+        for pid in random.sample(TOKEN_PLAYLISTS, min(count + 2, len(TOKEN_PLAYLISTS))):
+            if len(self.tokens) >= count:
                 break
-            print(f"    Rate limited, waiting {wait}s...")
-            time.sleep(wait)
-            token = get_token(session)
-            continue
+            s.headers["User-Agent"] = random.choice(USER_AGENTS)
+            try:
+                resp = s.get(f"https://open.spotify.com/embed/playlist/{pid}", timeout=15)
+                tokens = re.findall(r'"accessToken":"([^"]+)"', resp.text)
+                if tokens and tokens[0] not in self.burned and tokens[0] not in self.tokens:
+                    self.tokens.append(tokens[0])
+            except Exception:
+                continue
+            time.sleep(0.5)
+        print(f"  Token pool: {len(self.tokens)} tokens")
 
-        if resp.status_code == 401:
-            token = get_token(session)
-            continue
+    def get(self):
+        if not self.tokens:
+            raise RuntimeError("No tokens")
+        return self.tokens[self.idx % len(self.tokens)]
 
-        if resp.status_code != 200:
-            break
+    def rotate(self):
+        if len(self.tokens) <= 1:
+            return False
+        self.idx = (self.idx + 1) % len(self.tokens)
+        return True
 
-        items = resp.json().get("playlists", {}).get("items", [])
-        if not items:
-            break
+    def mark_burned(self, token):
+        self.burned.add(token)
+        self.tokens = [t for t in self.tokens if t != token]
+        if self.tokens:
+            self.idx = self.idx % len(self.tokens)
 
-        playlists.extend(items)
-        offset += 50
-        time.sleep(2)
-
-    return token, playlists[:max_playlists]
-
-
-def get_description_from_page(session, playlist_id):
-    """Scrape playlist description directly from the open.spotify.com page."""
-    url = f"https://open.spotify.com/playlist/{playlist_id}"
-    try:
-        resp = session.get(url, timeout=15)
-        if resp.status_code != 200:
-            return ""
-
-        text = resp.text
-
-        # Try meta description
-        match = re.search(
-            r'<meta\s+(?:name|property)="(?:og:description|description)"'
-            r'\s+content="([^"]*)"',
-            text,
-        )
-        if match:
-            desc = match.group(1)
-            # Decode HTML entities
-            desc = (
-                desc.replace("&amp;", "&")
-                .replace("&#x2F;", "/")
-                .replace("&#39;", "'")
-                .replace("&quot;", '"')
-            )
-            return desc
-
-        # Try JSON-LD or embedded data
-        matches = re.findall(r'"description"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
-        if matches:
-            longest = max(matches, key=len)
-            return longest
-
-        return ""
-    except Exception:
-        return ""
-
-
-def get_description_from_api(session, token, playlist_id):
-    """Get playlist description from API."""
-    resp = session.get(
-        f"https://api.spotify.com/v1/playlists/{playlist_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"fields": "id,name,description,external_urls"},
-        timeout=15,
-    )
-
-    if resp.status_code == 429:
-        wait = int(resp.headers.get("Retry-After", 30))
-        if wait > 120:
-            return token, None  # Signal to use page scraping
-        print(f"    Rate limited, waiting {wait}s...")
-        time.sleep(wait)
-        token = get_token(session)
-        resp = session.get(
-            f"https://api.spotify.com/v1/playlists/{playlist_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"fields": "id,name,description,external_urls"},
-            timeout=15,
-        )
-
-    if resp.status_code == 401:
-        token = get_token(session)
-        return token, None
-
-    if resp.status_code != 200:
-        return token, None
-
-    time.sleep(1.5)
-    return token, resp.json()
+    def refresh_one(self):
+        s = requests.Session()
+        s.verify = False
+        s.headers["User-Agent"] = random.choice(USER_AGENTS)
+        pid = random.choice(TOKEN_PLAYLISTS)
+        try:
+            resp = s.get(f"https://open.spotify.com/embed/playlist/{pid}", timeout=15)
+            tokens = re.findall(r'"accessToken":"([^"]+)"', resp.text)
+            if tokens and tokens[0] not in self.burned and tokens[0] not in self.tokens:
+                self.tokens.append(tokens[0])
+                return True
+        except Exception:
+            pass
+        return False
 
 
 def extract_contacts(text):
-    """Extract emails and Instagram handles."""
     if not text:
         return [], []
     emails = EMAIL_REGEX.findall(text)
+    emails = [e for e in emails if e.lower() not in EMAIL_BLACKLIST
+              and not e.endswith((".png", ".jpg", ".svg", ".gif", ".css", ".js"))]
     raw_ig = INSTAGRAM_REGEX.findall(text)
-    instagrams = [h for h in raw_ig if h.lower() not in IG_STOPWORDS]
-    return emails, instagrams
+    instagrams = [h for h in raw_ig if h.lower() not in IG_STOPWORDS and len(h) > 2]
+    return list(set(emails)), list(set(instagrams))
 
 
-def save_to_csv(rows, filename="output.csv"):
-    """Save to CSV, deduplicating by email/instagram contact (one entry per unique contact)."""
-    seen_urls = set()
+def api_search_keyword(pool, keyword, seen_ids, seen_contacts, session):
+    """Search one keyword across multiple pages, extracting contacts from descriptions.
+
+    Conservative pacing: 2s between requests, rotate tokens proactively.
+    """
+    results = []
+    offset = 0
+    total_playlists = 0
+    rate_limited = False
+
+    while offset < 1000:
+        token = pool.get()
+        try:
+            resp = session.get(
+                "https://api.spotify.com/v1/search",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"q": keyword, "type": "playlist", "limit": 50, "offset": offset},
+                timeout=15,
+            )
+        except requests.RequestException:
+            time.sleep(2)
+            continue
+
+        if resp.status_code == 200:
+            data = resp.json().get("playlists", {})
+            items = data.get("items", [])
+            if not items:
+                break
+
+            total_playlists += len(items)
+
+            for pl in items:
+                if not pl or not pl.get("id"):
+                    continue
+                pid = pl["id"]
+                if pid in seen_ids:
+                    continue
+                seen_ids.add(pid)
+
+                desc = html_mod.unescape(pl.get("description", "") or "")
+                emails, instagrams = extract_contacts(desc)
+
+                if not emails and not instagrams:
+                    continue
+
+                email_str = ", ".join(emails)
+                ig_str = ", ".join(instagrams)
+                contact_key = (email_str or ig_str).lower()
+                if contact_key in seen_contacts:
+                    continue
+                seen_contacts.add(contact_key)
+
+                playlist_url = pl.get("external_urls", {}).get(
+                    "spotify", f"https://open.spotify.com/playlist/{pid}")
+                results.append({
+                    "email": email_str,
+                    "instagram": ig_str,
+                    "playlist_name": pl.get("name", ""),
+                    "playlist_url": playlist_url,
+                    "keyword": keyword,
+                    "description_snippet": desc[:100].replace("\n", " "),
+                })
+
+            offset += 50
+            # Conservative pacing to avoid rate limits
+            time.sleep(2)
+
+            # Proactively rotate token every 3 pages
+            if offset % 150 == 0:
+                pool.rotate()
+
+        elif resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", 30))
+            if pool.rotate():
+                # Try next token immediately
+                time.sleep(1)
+                continue
+            # All tokens hit — short wait then try fresh token
+            if retry_after <= 30:
+                print(f"    Rate limited ({retry_after}s), waiting...")
+                time.sleep(retry_after + 2)
+                pool.refresh_one()
+                continue
+            else:
+                print(f"    Heavy rate limit ({retry_after}s), stopping keyword")
+                rate_limited = True
+                break
+
+        elif resp.status_code == 401:
+            pool.mark_burned(token)
+            if not pool.tokens:
+                pool.fill(3)
+                if not pool.tokens:
+                    break
+
+        else:
+            break
+
+    return results, total_playlists, rate_limited
+
+
+def load_existing(filename="output.csv"):
+    rows = []
     seen_contacts = set()
-    unique = []
-    for row in rows:
-        url = row["playlist_url"]
-        if url in seen_urls:
-            continue
-        seen_urls.add(url)
+    seen_ids = set()
+    try:
+        with open(filename, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+                url = row.get("playlist_url", "")
+                if "/playlist/" in url:
+                    seen_ids.add(url.split("/playlist/")[-1].split("?")[0])
+                email = row.get("email", "").strip()
+                ig = row.get("instagram", "").strip()
+                if email:
+                    seen_contacts.add(email.lower())
+                if ig:
+                    seen_contacts.add(ig.lower())
+    except FileNotFoundError:
+        pass
+    return rows, seen_contacts, seen_ids
 
-        email = row.get("email", "").strip()
-        instagram = row.get("instagram", "").strip()
-        contact_key = email if email else instagram
-        if contact_key and contact_key in seen_contacts:
-            continue
-        if contact_key:
-            seen_contacts.add(contact_key)
 
-        unique.append(row)
-
-    fieldnames = [
-        "email", "instagram", "playlist_name",
-        "playlist_url", "keyword", "description_snippet",
-    ]
+def save_csv(rows, filename="output.csv"):
+    fieldnames = ["email", "instagram", "playlist_name", "playlist_url", "keyword", "description_snippet"]
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(unique)
-    return len(unique)
-
-
-def scrape_keyword(session, token, keyword, seen_ids, max_playlists=200):
-    """Search and scrape one keyword using search result descriptions.
-
-    No separate API call needed per playlist — search results include descriptions.
-    Returns (token, results).
-    """
-    print(f"\n  Searching '{keyword}'...")
-
-    token, playlists = search_with_token(session, token, keyword, max_playlists)
-    print(f"  Found {len(playlists)} playlists")
-
-    results = []
-
-    for pl in playlists:
-        if not pl or not pl.get("id"):
-            continue
-
-        pid = pl["id"]
-        if pid in seen_ids:
-            continue
-        seen_ids.add(pid)
-
-        name = pl.get("name", "")
-        description = pl.get("description", "") or ""
-        playlist_url = pl.get("external_urls", {}).get("spotify",
-                        f"https://open.spotify.com/playlist/{pid}")
-
-        # Decode HTML entities in description
-        description = (
-            description.replace("&amp;", "&")
-            .replace("&#x2F;", "/")
-            .replace("&#39;", "'")
-            .replace("&quot;", '"')
-        )
-
-        emails, instagrams = extract_contacts(description)
-
-        if not emails and not instagrams:
-            continue
-
-        results.append({
-            "email": ", ".join(emails),
-            "instagram": ", ".join(instagrams),
-            "playlist_name": name,
-            "playlist_url": playlist_url,
-            "keyword": keyword,
-            "description_snippet": description[:100].replace("\n", " "),
-        })
-
-        print(f"    HIT: {name} | emails={emails} ig={instagrams}")
-
-    return token, results
+        writer.writerows(rows)
+    return len(rows)
 
 
 def main():
-    default_keywords = [
-        # User-specified genres and styles
-        "submit study beats playlist", "submit jazz hop playlist",
-        "submit chill hop playlist", "submit hip hop playlist",
-        "submit conscious hip hop playlist", "submit rap playlist",
-        "submit pop rap playlist", "submit neo soul pop rap playlist",
-        "submit bedroom pop playlist", "submit lo-fi pop playlist",
-        "submit alternative R&B playlist", "submit indie R&B playlist",
-        "submit Latin hip hop playlist", "submit boom bap playlist",
-        # Genre-only searches
-        "study beats", "jazz hop", "chill hop",
-        "conscious hip hop", "pop rap", "neo soul pop rap",
-        "bedroom pop", "lo-fi pop", "alternative R&B", "indie R&B",
-        "Latin hip hop", "boom bap",
-        # Broader submit variations
-        "submit hip hop", "submit R&B playlist", "submit lofi playlist",
-        "submit beats playlist", "submit music rap",
-        "rap playlist submit email", "hip hop playlist curators",
-        "underground submit playlist", "playlist submission rap",
-        "accepting submissions hip hop", "send beats playlist",
-        "curated rap playlist", "new artist rap playlist",
-        "rap playlist email", "hip hop email submit",
-        "independent artist playlist", "unsigned artist playlist",
-        "submit neo soul playlist", "submit soul playlist",
-        "submit jazz rap playlist", "submit chill rap playlist",
-        "submit indie hip hop playlist", "submit alternative hip hop playlist",
-        "submit conscious rap playlist", "submit lo-fi beats playlist",
-        "submit study beats email", "submit bedroom pop email",
-        "promote rap music", "submit your music hip hop",
-        "indie rap submit", "submit R&B email",
+    keywords = [
+        # High-yield submit keywords
+        "submit rap playlist", "submit hip hop playlist",
+        "submit lofi playlist", "submit R&B playlist",
+        "submit beats playlist", "submit neo soul playlist",
+        "submit boom bap playlist", "submit jazz hop playlist",
+        "submit chill hop playlist", "submit study beats playlist",
+        "submit bedroom pop playlist", "submit conscious rap playlist",
+        "submit alternative hip hop", "submit indie hip hop",
+        "submit lo-fi beats playlist", "submit soul playlist",
         "submit afrobeats playlist", "submit latin rap playlist",
-        # Extra genre combos
-        "Neo Soul", "Alternative Hip Hop", "Jazz Rap",
-        "Chill Rap", "Indie Hip Hop", "Lo-fi Hip Hop",
-        "Underground Hip Hop", "R&B", "Hip Hop Soul",
-        "Fresh Hip Hop", "Hidden Gems Rap", "Undiscovered Rap",
-        "Up and Coming Rap", "Independent Hip Hop", "Bedroom Rapper",
-        "Small Artist Rap", "Unsigned Rapper",
+        "submit pop rap playlist", "submit lo-fi pop playlist",
+        "submit alternative R&B", "submit indie R&B",
+        "submit Latin hip hop", "submit jazz rap playlist",
+        # Email-focused queries
+        "rap playlist email submit", "hip hop playlist email submit",
+        "lofi playlist email submit", "R&B playlist email submit",
+        "rap playlist curators email", "hip hop playlist curators contact",
+        # Broader patterns
+        "submit your music rap", "submit your song hip hop",
+        "accepting submissions rap playlist", "accepting submissions hip hop",
+        "send beats playlist", "promote rap music playlist",
+        "underground hip hop submit", "independent artist playlist submit",
+        "new artist rap playlist", "unsigned artist playlist submit",
+        "indie rap playlist submit", "chill rap playlist submit",
+        "fresh hip hop playlist", "hidden gems rap playlist",
+        "undiscovered rap playlist", "small artist rap playlist",
+        # More genres
+        "submit trap playlist", "submit drill playlist",
+        "submit phonk playlist", "submit cloud rap playlist",
+        "submit emo rap playlist", "submit UK rap playlist",
+        "submit reggaeton playlist", "submit dancehall playlist",
+        "submit funk playlist", "submit gospel rap playlist",
+        "submit christian hip hop", "submit southern rap playlist",
+        "submit west coast rap", "submit east coast rap",
+        "submit midwest rap", "submit Atlanta rap playlist",
+        # Additional high-quality patterns
+        "playlist submission rap", "playlist submission hip hop",
+        "playlist submission R&B", "playlist submission lofi",
+        "indie playlist submit", "underground playlist submit",
+        "submit music playlist", "submit track playlist",
+        "curator playlist rap", "curator playlist hip hop",
     ]
-    keywords = sys.argv[1:] if len(sys.argv) > 1 else default_keywords
 
-    session = make_session()
+    target = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 200
 
-    # Load existing results to avoid redoing work
-    all_results = []
-    seen_ids = set()
-    done_keywords = set()
-    try:
-        with open("output.csv", "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                all_results.append(row)
-                # Extract playlist ID from URL
-                url = row.get("playlist_url", "")
-                if "/playlist/" in url:
-                    seen_ids.add(url.split("/playlist/")[-1])
-                done_keywords.add(row.get("keyword", ""))
-        print(f"Loaded {len(all_results)} existing results, {len(seen_ids)} playlist IDs")
-    except FileNotFoundError:
-        pass
+    existing_rows, seen_contacts, seen_ids = load_existing()
+    print(f"Loaded {len(existing_rows)} existing entries ({len(seen_contacts)} unique contacts)")
+    print(f"Loaded {len(seen_ids)} known playlist IDs to skip")
+    print(f"Target: {target} new contacts\n")
 
-    print("Getting Spotify token...")
-    token = get_token(session)
-    print("Token acquired!\n")
+    session = requests.Session()
+    session.verify = False
+    session.headers.update({
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json",
+    })
 
-    for keyword in keywords:
-        if keyword in done_keywords:
-            print(f"\nSkipping '{keyword}' (already done)")
-            continue
-        print(f"\n{'='*50}")
-        print(f"Keyword: {keyword}")
-        print(f"{'='*50}")
+    pool = TokenPool()
+    print("Building token pool...")
+    pool.fill(4)
+    if not pool.tokens:
+        print("ERROR: No tokens. Spotify may be blocking this IP.")
+        return
 
-        token, results = scrape_keyword(session, token, keyword, seen_ids)
-        all_results.extend(results)
-        print(f"  => {len(results)} contacts for '{keyword}'")
+    all_rows = list(existing_rows)
+    total_new = 0
+    consecutive_rate_limits = 0
 
-        # Save incrementally
-        if all_results:
-            count = save_to_csv(all_results)
-            print(f"  => {count} total saved to output.csv")
+    for i, keyword in enumerate(keywords):
+        if total_new >= target:
+            print(f"\nReached target of {target} new contacts!")
+            break
 
-        # Get fresh token between keywords
-        try:
-            token = get_token(session)
-        except Exception:
-            pass
+        print(f"\n[{i+1}/{len(keywords)}] '{keyword}'")
 
-        time.sleep(10)
+        results, total_pl, rate_limited = api_search_keyword(
+            pool, keyword, seen_ids, seen_contacts, session
+        )
 
-    print(f"\n{'='*50}")
-    if all_results:
-        count = save_to_csv(all_results)
-        print(f"DONE! {count} unique playlist contacts saved to output.csv")
-    else:
-        print("No contacts found.")
+        all_rows.extend(results)
+        total_new += len(results)
+
+        for r in results:
+            contact = r["email"] or r["instagram"]
+            print(f"    HIT: {r['playlist_name']} | {contact}")
+
+        count = save_csv(all_rows)
+        print(f"  Searched {total_pl} playlists => +{len(results)} new | {count} total ({total_new} this run)")
+
+        if rate_limited:
+            consecutive_rate_limits += 1
+            if consecutive_rate_limits >= 3:
+                print("\n  Heavy rate limiting. Pausing 60s to recover...")
+                time.sleep(60)
+                pool.fill(4)
+                consecutive_rate_limits = 0
+            else:
+                time.sleep(10)
+                pool.refresh_one()
+        else:
+            consecutive_rate_limits = 0
+            # Proactive token refresh every 5 keywords
+            if i % 5 == 4:
+                pool.refresh_one()
+            time.sleep(random.uniform(3, 5))
+
+    count = save_csv(all_rows)
+    print(f"\n{'=' * 60}")
+    print(f"DONE! +{total_new} new contacts this run. {count} total in output.csv")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
